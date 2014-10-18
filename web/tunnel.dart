@@ -3,21 +3,22 @@ import 'package:vector_math/vector_math.dart';
 import 'dart:web_gl' as webgl;
 import 'dart:typed_data';
 import 'dart:math';
+import 'dart:async';
 
 class CubeVertex {
   int _axis;
   int _direction;
-  List<double> _position;
+  Vector3 _position;
   /*
    * Make a cube vertex where the center is given by position, 
    * the cube edge length is 2*radius, and the direction gives
    * the sign of the respective axis of the face.
    */
-  CubeVertex(List<double> position, double radius, int axis, int direction, List<double> squareVertex) {
+  CubeVertex(Vector3 position, double radius, int axis, int direction, List<double> squareVertex) {
     _axis = axis;
     _direction = direction;
 
-    _position = new List<double>.from(position);
+    _position = new Vector3.copy(position);
     var d = direction != 0 ? radius : -radius;
     _position[axis] += d;
     int index = 0;
@@ -29,7 +30,9 @@ class CubeVertex {
     }
   }
   List<double> dumpPosition() {
-    return _position;
+    List<double> buffer = new List<double>(3);
+    _position.copyIntoArray(buffer);
+    return buffer;
   }
   List<double> dumpFaceNormal() {
     List<double> normal = [0.0, 0.0, 0.0];
@@ -41,12 +44,14 @@ class CubeVertex {
 class Cube {
   double _radius;
   List<CubeVertex> _vertexes;
-  List<double> _position;
+  Vector3 _position;
   List<bool> _hasSide;
   List<Cube> _neighbors;
-  Cube(List<double> position) {
-    _radius = 4.0;
-    _position = new List<double>.from(position);
+  Cube() : this.positioned(new Vector3.zero());
+
+  Cube.positioned(Vector3 position, [double radius = 32.0]) {
+    _radius = radius;
+    _position = new Vector3.zero();
     _hasSide = new List<bool>(6);
     for (int i = 0; i < 6; i++) {
       _hasSide[i] = true;
@@ -58,11 +63,16 @@ class Cube {
   }
   void connectCube(int axis, int direction, Cube neighbor) {
     _hasSide[axis * 2 + direction] = false;
+    _neighbors[axis * 2 + direction] = neighbor;
+
     neighbor._hasSide[axis * 2 + (1 - direction)] = false;
-    neighbor._position = new List<double>.from(_position);
+    neighbor._neighbors[axis * 2 + (1 - direction)] = this;
+
+    neighbor._position = new Vector3.copy(_position);
     double d = _radius + neighbor._radius;
     d = direction != 0 ? d : -d;
     neighbor._position[axis] += d;
+
     neighbor._initBuffer();
     _initBuffer();
   }
@@ -77,7 +87,7 @@ class Cube {
         int axis = i ~/ 2;
 
         for (int j = 0; j < 4; j++) {
-          int j_rev = ((direction != 0) != (axis & 1 == 1)) ? j : 3-j;
+          int j_rev = ((direction != 0) != (axis % 2 == 1)) ? j : 3 - j;
           _vertexes.add(new CubeVertex(_position, _radius, axis, direction, squareVertexes[j_rev]));
         }
       }
@@ -119,37 +129,72 @@ class Level {
   /*webgl.Buffer _vertexPositionBuffer;
   webgl.Buffer _vertexNormalBuffer;*/
   webgl.Buffer _vertexBuffer;
-    Cube _startCube;
+  Cube _startCube;
   List<Cube> _cubes;
   webgl.RenderingContext _gl;
   Cube _previousCube;
   void _addCube(int axis, int direction) {
-    var neighbor = new Cube([0.0, 0.0, 0.0]);
+    var neighbor = new Cube();
     _previousCube.connectCube(axis, direction, neighbor);
     _cubes.add(neighbor);
     _previousCube = neighbor;
 
+  }
+
+  void _recursiveAddCube(Cube root, int levels, [int length = 1]) {
+    if (levels == 0) {
+      return;
+    }
+
+    Cube nearmiddle;
+    nearmiddle = new Cube();
+    root.connectCube(2, 1, nearmiddle);
+    _cubes.add(nearmiddle);
+
+    Cube middle = new Cube();
+    nearmiddle.connectCube(2, 1, middle);
+    _cubes.add(middle);
+
+    int new_axis = levels % 2;
+
+
+    Cube left = new Cube();
+    middle.connectCube(new_axis, 0, left);
+    _cubes.add(left);
+
+
+    Cube farleft;
+    for (int i = 0; i < length; i++) {
+      farleft = new Cube();
+      left.connectCube(new_axis, 0, farleft);
+      _cubes.add(farleft);
+      left = farleft;
+    }
+
+    Cube right = new Cube();
+    middle.connectCube(new_axis, 1, right);
+    _cubes.add(right);
+
+
+    Cube farright;
+    for (int i = 0; i < length; i++) {
+      farright = new Cube();
+      right.connectCube(new_axis, 1, farright);
+      _cubes.add(farright);
+      right = farright;
+    }
+
+    _recursiveAddCube(farleft, levels - 1);
+    _recursiveAddCube(farright, levels - 1);
   }
   Level(webgl.RenderingContext gl) {
     _numFaces = 0;
     _gl = gl;
     _cubes = new List<Cube>();
 
-    _startCube = new Cube([0.0, 0.0, 0.0]);
+    _startCube = new Cube();
     _cubes.add(_startCube);
-    _previousCube = _startCube;
-    _addCube(2, 0);
-    _addCube(0, 1);
-    _addCube(1, 1);
-    _addCube(1, 1);
-    _addCube(0, 1);
-    _addCube(0, 1);
-    _addCube(2, 1);
-    _addCube(1, 0);
-    _addCube(1, 0);
-    _addCube(1, 0);
-    _addCube(1, 0);
-    _addCube(1, 0);
+    _recursiveAddCube(_startCube, 7);
 
     _initBuffers();
   }
@@ -157,38 +202,29 @@ class Level {
 
 
   void _initBuffers() {
+    for (Cube cube in _cubes) {
+      cube._initBuffer();
+    }
     _vertexBuffer = _gl.createBuffer();
-   /*_vertexPositionBuffer = _gl.createBuffer();
-    _vertexNormalBuffer = _gl.createBuffer();*/
   }
 
   void makeBuffers() {
-
-    // fill "current buffer" with triangle verticies
-    /*List<double> positions = new List<double>();
-    List<double> normals = new List<double>();*/
     List<double> buffer = new List<double>();
 
     for (var cube in _cubes) {
-      /*positions.addAll(cube.dumpPositionBuffer());
-      normals.addAll(cube.dumpNormalBuffer());*/
+
       buffer.addAll(cube.dumpBuffer());
     }
 
     _gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _vertexBuffer);
     _gl.bufferDataTyped(webgl.RenderingContext.ARRAY_BUFFER, new Float32List.fromList(buffer), webgl.RenderingContext.STATIC_DRAW);
-    /*_gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _vertexPositionBuffer);
-    _gl.bufferDataTyped(webgl.RenderingContext.ARRAY_BUFFER, new Float32List.fromList(positions), webgl.RenderingContext.STATIC_DRAW);*/
-    /*_gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _vertexNormalBuffer);
-    _gl.bufferDataTyped(webgl.RenderingContext.ARRAY_BUFFER, new Float32List.fromList(normals), webgl.RenderingContext.STATIC_DRAW);*/
-    
-    //_numFaces = positions.length ~/ 12;
+
     _numFaces = buffer.length ~/ (stride);
   }
   final int dimensions = 3;
   final int stride = (3 * 4) * 2;
   final int positionOffset = 0;
-  final int normalOffset = 3*4;
+  final int normalOffset = 3 * 4;
   void render(int aVertexPosition, int aVertexNormal) {
     for (int i = 0; i < _numFaces; i++) {
       _gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _vertexBuffer);
@@ -203,7 +239,73 @@ class Level {
 }
 
 /**
- * 
+ * The player object.
+ */
+class Player {
+  static final _noclipping = true;
+  static const RADIUS = 0.5;
+  static final DRAG = pow(0.2, 1.0 / Game.TICS_PER_SECOND);
+  static final FRICTION = 0.8;
+
+  Camera _camera;
+  Vector3 _momentum;
+  Cube _cube;
+
+  Player(Cube cube) {
+    _camera = new Camera();
+    _momentum = new Vector3.zero();
+    _cube = cube;
+  }
+
+  void impulse(Vector3 direction) {
+    _momentum += direction;
+  }
+
+  void move_forward(double amount) {
+    impulse(_camera._direction * amount);
+  }
+  void move_left(double amount) {
+    impulse(_camera.left * -amount);
+  }
+
+  void advance() {
+    Vector3 new_position = _camera._position + _momentum;
+
+    bool hit_wall = false;
+    for (int axis = 0; axis < 3; axis++) {
+      double diff = new_position[axis] - _cube._position[axis];
+      if ((diff + RADIUS).abs() > _cube._radius && !_noclipping) {
+        int direction = diff + RADIUS > 0 ? 1 : 0;
+        if (_cube._hasSide[axis * 2 + direction]) {
+          hit_wall = true;
+          Vector3 normal = new Vector3.zero();
+          normal[axis] = 1.0 - direction * 2.0;
+          _momentum.reflect(normal);
+          _momentum *= FRICTION;
+          new_position = _camera._position + _momentum;
+        } else {
+          _cube = _cube._neighbors[axis * 2 + direction];
+        }
+      }
+    }
+
+
+    _camera._position = new_position;
+    _momentum *= DRAG;
+  }
+  void turn_left(double angle) {
+    _camera.turn_left(angle);
+  }
+  void roll_left(double angle) {
+    _camera.roll_left(angle);
+  }
+  void yaw_up(double angle) {
+    _camera.yaw_up(angle);
+  }
+}
+
+/**
+ * The camera.
  */
 class Camera {
   Vector3 _position;
@@ -215,9 +317,6 @@ class Camera {
     _direction = new Vector3(0.0, 0.0, 1.0);
   }
   Matrix4 getModelviewMatrix() {
-    window.console.log(_position);
-    window.console.log(_up);
-    window.console.log(_direction);
     return makeViewMatrix(_position, _position + _direction, _up);
   }
 
@@ -255,8 +354,11 @@ class Camera {
    * Move the camera to the left by the given amount.
    */
   void move_left(double amount) {
-    _position -= _direction.cross(_up) * amount;
+    _position -= left * amount;
   }
+
+  Vector3 get left => _direction.cross(_up);
+
 }
 
 /**
@@ -265,14 +367,23 @@ class Camera {
  * https://github.com/BoldInventions/dart-webgl-tutorials/blob/master/web/lesson_01/Lesson_01.dart
  */
 class Game {
-  final double FORWARD_AMOUNT = 0.8;
-  final double BACKWARD_AMOUNT = 0.8;
-  final double STRAFE_AMOUNT = 0.8;
-  final double YAW_AMOUNT = 10 * 2 * PI / 360;
-  final double ROLL_AMOUNT = 10 * 2 * PI / 360;
-  final double TURN_AMOUNT = 10 * 2 * PI / 360;
-  Camera _camera;
+  static const TICS_PER_SECOND = 35;
+  static const double FAR_DISTANCE = 10000.0;
+  /**
+   * Forward speed in terms of length units per second.
+   */
+  static const double FORWARD_AMOUNT = 12.0;
+  static const double BACKWARD_AMOUNT = 7.0;
+  static const double STRAFE_AMOUNT = 8.0;
+  /**
+   * Yaw speed in terms of radians per second.
+   */
+  static const double YAW_AMOUNT = 120 * 2 * PI / 360;
+  static const double ROLL_AMOUNT = 120 * 2 * PI / 360;
+  static const double TURN_AMOUNT = 120 * 2 * PI / 360;
+  Player _player;
   Level _level;
+  Keyboard _keyboard;
 
   CanvasElement _canvas;
   webgl.RenderingContext _gl;
@@ -305,9 +416,9 @@ class Game {
     _gl.clearColor(0.0, 0.0, 0.0, 1.0);
     _gl.enable(webgl.RenderingContext.DEPTH_TEST);
 
-    _camera = new Camera();
 
     _level = new Level(_gl);
+    _player = new Player(_level._startCube);
   }
 
 
@@ -419,7 +530,7 @@ class Game {
 
   }
 
-  void render() {
+  void _render() {
     _gl.viewport(0, 0, _viewportWidth, _viewportHeight);
     _gl.clearColor(0, 0, 0, 1);
     _gl.enable(webgl.RenderingContext.CULL_FACE);
@@ -427,9 +538,9 @@ class Game {
     _gl.clear(webgl.RenderingContext.COLOR_BUFFER_BIT | webgl.RenderingContext.DEPTH_BUFFER_BIT);
 
     // field of view is 90°, width-to-height ratio, hide things closer than 0.1 or further than 100
-    _pMatrix = makePerspectiveMatrix(radians(90.0), _viewportWidth / _viewportHeight, 0.1, 100.0);
+    _pMatrix = makePerspectiveMatrix(radians(90.0), _viewportWidth / _viewportHeight, 0.1, FAR_DISTANCE);
 
-    _mvMatrix = _camera.getModelviewMatrix();
+    _mvMatrix = _player._camera.getModelviewMatrix();
     _setMatrixUniforms();
 
 
@@ -438,54 +549,89 @@ class Game {
 
   }
 
-  void hookEventHandlers() {
+  void _handleKey(KeyboardEvent e) {
+    switch (e.keyCode) {
+      case KeyCode.W:
+        _player.move_forward(FORWARD_AMOUNT / TICS_PER_SECOND);
+        break;
+      case KeyCode.S:
+        _player.move_forward(-BACKWARD_AMOUNT / TICS_PER_SECOND);
+        break;
+      case KeyCode.A:
+        _player.move_left(STRAFE_AMOUNT / TICS_PER_SECOND);
+        break;
+      case KeyCode.D:
+        _player.move_left(-STRAFE_AMOUNT / TICS_PER_SECOND);
+        break;
+
+      case KeyCode.LEFT:
+        if (e.shiftKey) {
+          _player.roll_left(ROLL_AMOUNT / TICS_PER_SECOND);
+        } else {
+          _player.turn_left(TURN_AMOUNT / TICS_PER_SECOND);
+        }
+        break;
+      case KeyCode.RIGHT:
+        if (e.shiftKey) {
+          _player.roll_left(-ROLL_AMOUNT / TICS_PER_SECOND);
+        } else {
+          _player.turn_left(-TURN_AMOUNT / TICS_PER_SECOND);
+        }
+        break;
+
+
+      case KeyCode.UP:
+        _player.yaw_up(YAW_AMOUNT / TICS_PER_SECOND);
+        break;
+      case KeyCode.DOWN:
+        _player.yaw_up(-YAW_AMOUNT / TICS_PER_SECOND);
+        break;
+    }
+  }
+
+
+  void _gameloop(Timer timer) {
+    for (int keyCode in _keyboard._keys.keys) {
+
+      _handleKey(_keyboard._keys[keyCode]);
+    }
+    _player.advance();
+    _render();
+  }
+
+  Timer startTimer() {
+    const duration = const Duration(milliseconds: 1000 ~/ TICS_PER_SECOND);
+    _keyboard = new Keyboard();
+
+    return new Timer.periodic(duration, _gameloop);
+  }
+}
+
+/**
+ * http://stackoverflow.com/questions/13746105/how-to-listen-to-key-press-repetitively-in-dart-for-games
+ */
+class Keyboard {
+  Map<int, KeyboardEvent> _keys = new Map<int, KeyboardEvent>();
+
+  Keyboard() {
+    window.onKeyDown.listen((KeyboardEvent e) {
+      // If the key is not set yet, set it with a timestamp.
+      if (!_keys.containsKey(e.keyCode)) _keys[e.keyCode] = e;
+    });
+
     window.onKeyUp.listen((KeyboardEvent e) {
-      switch (e.keyCode) {
-        case KeyCode.W:
-          _camera.move_forward(FORWARD_AMOUNT);
-          break;
-        case KeyCode.S:
-          _camera.move_forward(-BACKWARD_AMOUNT);
-          break;
-        case KeyCode.A:
-          _camera.move_left(STRAFE_AMOUNT);
-          break;
-        case KeyCode.D:
-          _camera.move_left(-STRAFE_AMOUNT);
-          break;
-
-        case KeyCode.LEFT:
-          if (e.shiftKey) {
-            _camera.roll_left(ROLL_AMOUNT);
-          } else {
-            _camera.turn_left(TURN_AMOUNT);
-          }
-          break;
-        case KeyCode.RIGHT:
-          if (e.shiftKey) {
-            _camera.roll_left(-ROLL_AMOUNT);
-          } else {
-            _camera.turn_left(-TURN_AMOUNT);
-          }
-          break;
-
-
-        case KeyCode.UP:
-          _camera.yaw_up(YAW_AMOUNT);
-          break;
-        case KeyCode.DOWN:
-          _camera.yaw_up(-YAW_AMOUNT);
-          break;
-
-      }
-      render();
+      _keys.remove(e.keyCode);
     });
   }
+
+  /**
+   * Check if the given key code is pressed. You should use the [KeyCode] class.
+   */
+  isPressed(int keyCode) => _keys.containsKey(keyCode);
 }
 
 void main() {
   Game game = new Game(querySelector('#game'));
-  game.hookEventHandlers();
   //window.console.log(level._startCube.dumpBuffer());
-  game.render();
+  game.startTimer();
 }
