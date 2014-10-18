@@ -2,6 +2,7 @@ import 'dart:html';
 import 'package:vector_math/vector_math.dart';
 import 'dart:web_gl' as webgl;
 import 'dart:typed_data';
+import 'dart:math';
 
 class CubeVertex {
   int _axis;
@@ -44,14 +45,14 @@ class Cube {
   List<bool> _hasSide;
   List<Cube> _neighbors;
   Cube(List<double> position) {
-    _radius = 1.0;
+    _radius = 4.0;
     _position = new List<double>.from(position);
     _hasSide = new List<bool>(6);
     for (int i = 0; i < 6; i++) {
       _hasSide[i] = true;
     }
 
-    
+
     _neighbors = new List<Cube>(6);
     _initBuffer();
   }
@@ -63,9 +64,10 @@ class Cube {
     d = direction != 0 ? d : -d;
     neighbor._position[axis] += d;
     neighbor._initBuffer();
+    _initBuffer();
   }
   void _initBuffer() {
-    _vertexes = new List<CubeVertexes>();
+    _vertexes = new List<CubeVertex>();
     //var squareVertexes = [[0, 0], [1, 0], [1, 1], [0, 1]];
     var squareVertexes = [[0, 0], [0, 1], [1, 1], [1, 0]];
     // Generate the vertexes.
@@ -75,7 +77,8 @@ class Cube {
         int axis = i ~/ 2;
 
         for (int j = 0; j < 4; j++) {
-          _vertexes.add(new CubeVertex(_position, _radius, axis, direction, squareVertexes[j]));
+          int j_rev = ((direction != 0) != (axis & 1 == 1)) ? j : 3-j;
+          _vertexes.add(new CubeVertex(_position, _radius, axis, direction, squareVertexes[j_rev]));
         }
       }
     }
@@ -98,60 +101,161 @@ class Cube {
     }
     return buffer;
   }
+  List<double> dumpBuffer() {
+    List<double> buffer = new List<double>();
+    for (var vertex in _vertexes) {
+      buffer.addAll(vertex.dumpPosition());
+      buffer.addAll(vertex.dumpFaceNormal());
+    }
+    return buffer;
+  }
   int numVertexes() {
     return _vertexes.length;
   }
 
-  void render() {
-
-  }
 }
 class Level {
   int _numFaces;
-  webgl.Buffer _vertexPositionBuffer;
-  Cube _startCube;
+  /*webgl.Buffer _vertexPositionBuffer;
+  webgl.Buffer _vertexNormalBuffer;*/
+  webgl.Buffer _vertexBuffer;
+    Cube _startCube;
   List<Cube> _cubes;
   webgl.RenderingContext _gl;
+  Cube _previousCube;
+  void _addCube(int axis, int direction) {
+    var neighbor = new Cube([0.0, 0.0, 0.0]);
+    _previousCube.connectCube(axis, direction, neighbor);
+    _cubes.add(neighbor);
+    _previousCube = neighbor;
+
+  }
   Level(webgl.RenderingContext gl) {
     _numFaces = 0;
     _gl = gl;
     _cubes = new List<Cube>();
-    
+
     _startCube = new Cube([0.0, 0.0, 0.0]);
-    var neighbor = new Cube([0.0,0.0,0.0]);
-    _startCube.connectCube(2, 1, neighbor);
     _cubes.add(_startCube);
-    _cubes.add(neighbor);
+    _previousCube = _startCube;
+    _addCube(2, 0);
+    _addCube(0, 1);
+    _addCube(1, 1);
+    _addCube(1, 1);
+    _addCube(0, 1);
+    _addCube(0, 1);
+    _addCube(2, 1);
+    _addCube(1, 0);
+    _addCube(1, 0);
+    _addCube(1, 0);
+    _addCube(1, 0);
+    _addCube(1, 0);
+
+    _initBuffers();
   }
 
-  
 
-  void initBuffers() {
-    // create square
-    _vertexPositionBuffer = _gl.createBuffer();
-    _gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _vertexPositionBuffer);
+
+  void _initBuffers() {
+    _vertexBuffer = _gl.createBuffer();
+   /*_vertexPositionBuffer = _gl.createBuffer();
+    _vertexNormalBuffer = _gl.createBuffer();*/
+  }
+
+  void makeBuffers() {
 
     // fill "current buffer" with triangle verticies
-    List<double> positions = new List<double>();
-    
-    for(var cube in _cubes) {
-      positions.addAll(cube.dumpPositionBuffer());
+    /*List<double> positions = new List<double>();
+    List<double> normals = new List<double>();*/
+    List<double> buffer = new List<double>();
+
+    for (var cube in _cubes) {
+      /*positions.addAll(cube.dumpPositionBuffer());
+      normals.addAll(cube.dumpNormalBuffer());*/
+      buffer.addAll(cube.dumpBuffer());
     }
 
-    window.console.log(positions);
-    _gl.bufferDataTyped(webgl.RenderingContext.ARRAY_BUFFER, new Float32List.fromList(positions), webgl.RenderingContext.STATIC_DRAW);
-    _numFaces = positions.length~/12;
+    _gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _vertexBuffer);
+    _gl.bufferDataTyped(webgl.RenderingContext.ARRAY_BUFFER, new Float32List.fromList(buffer), webgl.RenderingContext.STATIC_DRAW);
+    /*_gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _vertexPositionBuffer);
+    _gl.bufferDataTyped(webgl.RenderingContext.ARRAY_BUFFER, new Float32List.fromList(positions), webgl.RenderingContext.STATIC_DRAW);*/
+    /*_gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _vertexNormalBuffer);
+    _gl.bufferDataTyped(webgl.RenderingContext.ARRAY_BUFFER, new Float32List.fromList(normals), webgl.RenderingContext.STATIC_DRAW);*/
+    
+    //_numFaces = positions.length ~/ 12;
+    _numFaces = buffer.length ~/ (stride);
+  }
+  final int dimensions = 3;
+  final int stride = (3 * 4) * 2;
+  final int positionOffset = 0;
+  final int normalOffset = 3*4;
+  void render(int aVertexPosition, int aVertexNormal) {
+    for (int i = 0; i < _numFaces; i++) {
+      _gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _vertexBuffer);
+      //_gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _vertexPositionBuffer);
+      _gl.vertexAttribPointer(aVertexPosition, dimensions, webgl.RenderingContext.FLOAT, false, stride, i * stride * 4 + positionOffset);
+      //_gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _vertexNormalBuffer);
+      _gl.vertexAttribPointer(aVertexNormal, dimensions, webgl.RenderingContext.FLOAT, false, stride, i * stride * 4 + normalOffset);
+      _gl.drawArrays(webgl.RenderingContext.TRIANGLE_FAN, 0, 4); // square, start at 0, total 4
+      //_gl.drawArrays(webgl.RenderingContext.LINE_LOOP, 0, 4); // square, start at 0, total 4
+    }
+  }
+}
+
+/**
+ * 
+ */
+class Camera {
+  Vector3 _position;
+  Vector3 _up;
+  Vector3 _direction;
+  Camera() {
+    _position = new Vector3(0.0, 0.0, 0.0);
+    _up = new Vector3(0.0, 1.0, 0.0);
+    _direction = new Vector3(0.0, 0.0, 1.0);
+  }
+  Matrix4 getModelviewMatrix() {
+    window.console.log(_position);
+    window.console.log(_up);
+    window.console.log(_direction);
+    return makeViewMatrix(_position, _position + _direction, _up);
   }
 
-  void render(int aVertexPosition) {
-    int dimensions = 3;
+  /**
+   * Look up by the given radians.
+   */
+  void yaw_up(double angle) {
+    Quaternion quat = new Quaternion.axisAngle(_direction.cross(_up), -angle);
+    _direction = quat.rotate(_direction);
+    _up = quat.rotate(_up);
+  }
 
-    _gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _vertexPositionBuffer);
-    for(int i=0;i<_numFaces;i++) {
-    _gl.vertexAttribPointer(aVertexPosition, dimensions, webgl.RenderingContext.FLOAT, false, 0, i*4*3*4);
-    //_gl.drawArrays(webgl.RenderingContext.TRIANGLE_FAN, 0, 4); // square, start at 0, total 4
-    _gl.drawArrays(webgl.RenderingContext.LINE_LOOP, 0, 4); // square, start at 0, total 4
-    }
+  /**
+   * Turn the camera around the _up vector by the given radians.
+   */
+  void turn_left(double angle) {
+    Quaternion quat = new Quaternion.axisAngle(_up, -angle);
+    _direction = quat.rotate(_direction);
+  }
+
+  /**
+   * Roll the camera counterclockwise around the _direction vector by the given radians.
+   */
+  void roll_left(double angle) {
+    Quaternion quat = new Quaternion.axisAngle(_direction, angle);
+    _up = quat.rotate(_up);
+  }
+  /**
+   * Move the camera forward by the given amount.
+   */
+  void move_forward(double amount) {
+    _position += _direction * amount;
+  }
+  /**
+   * Move the camera to the left by the given amount.
+   */
+  void move_left(double amount) {
+    _position -= _direction.cross(_up) * amount;
   }
 }
 
@@ -161,7 +265,13 @@ class Level {
  * https://github.com/BoldInventions/dart-webgl-tutorials/blob/master/web/lesson_01/Lesson_01.dart
  */
 class Game {
-
+  final double FORWARD_AMOUNT = 0.8;
+  final double BACKWARD_AMOUNT = 0.8;
+  final double STRAFE_AMOUNT = 0.8;
+  final double YAW_AMOUNT = 10 * 2 * PI / 360;
+  final double ROLL_AMOUNT = 10 * 2 * PI / 360;
+  final double TURN_AMOUNT = 10 * 2 * PI / 360;
+  Camera _camera;
   Level _level;
 
   CanvasElement _canvas;
@@ -177,7 +287,10 @@ class Game {
   Matrix4 _mvMatrix;
 
   int _aVertexPosition;
+  int _aVertexNormal;
+
   webgl.UniformLocation _uPMatrix;
+  webgl.UniformLocation _uNMatrix;
   webgl.UniformLocation _uMVMatrix;
 
 
@@ -187,10 +300,13 @@ class Game {
     _gl = canvas.getContext("experimental-webgl");
 
     _initShaders();
-    _initBuffers();
+    //_initBuffers();
 
     _gl.clearColor(0.0, 0.0, 0.0, 1.0);
     _gl.enable(webgl.RenderingContext.DEPTH_TEST);
+
+    _camera = new Camera();
+
     _level = new Level(_gl);
   }
 
@@ -199,13 +315,21 @@ class Game {
     // vertex shader source code. uPosition is our variable that we'll
     // use to create animation
     String vsSource = """
-    attribute vec3 aVertexPosition;
+    attribute vec3 vPosition;
+    attribute vec3 vNormal;
 
     uniform mat4 uMVMatrix;
+    uniform mat3 uNMatrix;
     uniform mat4 uPMatrix;
-
+    varying vec3 fPosition;
+    varying vec3 fNormal;
+    varying vec3 fColor;
     void main(void) {
-        gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+        vec4 mvPos = uMVMatrix * vec4(vPosition, 1.0);
+        gl_Position = uPMatrix * mvPos;
+        fPosition = mvPos.xyz / mvPos.w;
+        fColor = (vNormal+1.0)/2.0;
+        fNormal = uNMatrix * vNormal;
     }
     """;
 
@@ -213,9 +337,16 @@ class Game {
     // use to animate color
     String fsSource = """
     precision mediump float;
-
+    varying vec3 fPosition;
+    varying vec3 fNormal;
+    varying vec3 fColor;
     void main(void) {
-        gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+        float attenuation = 0.0;
+        float radiusLight = 10.0 / dot(fPosition,fPosition);
+        attenuation += max(0.0, dot(fNormal, normalize(fPosition))); 
+        //attenuation += max(min(radiusLight,1.0),0.1);
+        vec3 color = fColor;
+        gl_FragColor = vec4(color * attenuation,1.0);
     }
     """;
 
@@ -252,105 +383,109 @@ class Game {
       print(_gl.getProgramInfoLog(_shaderProgram));
     }
 
-    _aVertexPosition = _gl.getAttribLocation(_shaderProgram, "aVertexPosition");
-    _gl.enableVertexAttribArray(_aVertexPosition);
+    _aVertexPosition = _gl.getAttribLocation(_shaderProgram, "vPosition");
+    try {
+      _gl.enableVertexAttribArray(_aVertexPosition);
+    } on Exception {
 
+    }
+    _aVertexNormal = _gl.getAttribLocation(_shaderProgram, "vNormal");
+    try {
+      _gl.enableVertexAttribArray(_aVertexNormal);
+    } on Exception {
+
+    }
     _uPMatrix = _gl.getUniformLocation(_shaderProgram, "uPMatrix");
+    _uNMatrix = _gl.getUniformLocation(_shaderProgram, "uNMatrix");
     _uMVMatrix = _gl.getUniformLocation(_shaderProgram, "uMVMatrix");
-
-  }
-
-  void _initBuffers() {
-    // variable to store verticies
-    List<double> vertices;
-
-    // create triangle
-    _triangleVertexPositionBuffer = _gl.createBuffer();
-    _gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _triangleVertexPositionBuffer);
-
-    // fill "current buffer" with triangle verticies
-    vertices = [0.0, 1.0, 0.0, -1.0, -1.0, 0.0, 1.0, -1.0, 0.0];
-    _gl.bufferDataTyped(webgl.RenderingContext.ARRAY_BUFFER, new Float32List.fromList(vertices), webgl.RenderingContext.STATIC_DRAW);
-
-    //_triangleVertexPositionBuffer.itemSize = 3;
-    //_triangleVertexPositionBuffer.numItems = 3;
-
-    // create square
-    _squareVertexPositionBuffer = _gl.createBuffer();
-    _gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _squareVertexPositionBuffer);
-
-    // fill "current buffer" with triangle verticies
-    vertices = [1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0, -1.0, 0.0, -1.0, -1.0, 0.0];
-    _gl.bufferDataTyped(webgl.RenderingContext.ARRAY_BUFFER, new Float32List.fromList(vertices), webgl.RenderingContext.STATIC_DRAW);
 
   }
 
   void _setMatrixUniforms() {
     Float32List tmpList = new Float32List(16);
 
+
     _pMatrix.copyIntoArray(tmpList);
     _gl.uniformMatrix4fv(_uPMatrix, false, tmpList);
 
     _mvMatrix.copyIntoArray(tmpList);
     _gl.uniformMatrix4fv(_uMVMatrix, false, tmpList);
+
+    tmpList = new Float32List(9);
+    Matrix3 nMatrix = new Matrix3.columns(_mvMatrix.row0.xyz, _mvMatrix.row1.xyz, _mvMatrix.row2.xyz);
+    nMatrix.invert();
+    nMatrix.copyIntoArray(tmpList);
+    _gl.uniformMatrix3fv(_uNMatrix, false, tmpList);
+
   }
 
   void render() {
     _gl.viewport(0, 0, _viewportWidth, _viewportHeight);
-    _gl.clearColor(1, 0, 0, 1);
+    _gl.clearColor(0, 0, 0, 1);
+    _gl.enable(webgl.RenderingContext.CULL_FACE);
+    _gl.cullFace(webgl.RenderingContext.BACK);
     _gl.clear(webgl.RenderingContext.COLOR_BUFFER_BIT | webgl.RenderingContext.DEPTH_BUFFER_BIT);
 
-    // field of view is 45°, width-to-height ratio, hide things closer than 0.1 or further than 100
-    _pMatrix = makePerspectiveMatrix(radians(45.0), _viewportWidth / _viewportHeight, 0.1, 100.0);
+    // field of view is 90°, width-to-height ratio, hide things closer than 0.1 or further than 100
+    _pMatrix = makePerspectiveMatrix(radians(90.0), _viewportWidth / _viewportHeight, 0.1, 100.0);
 
-    _mvMatrix = new Matrix4.identity();
-    _mvMatrix.translate(new Vector3(-1.5, 0.0, -7.0));
+    _mvMatrix = _camera.getModelviewMatrix();
     _setMatrixUniforms();
 
-    //_gl.cullFace(webgl.RenderingContext.FRONT_AND_BACK);
 
-    _level.initBuffers();
-    _level.render(_aVertexPosition);
-    //_gl.drawArrays(webgl.RenderingContext.TRIANGLE_STRIP, 0, 4*6);
+    _level.makeBuffers();
+    _level.render(_aVertexPosition, _aVertexNormal);
 
-    // create square
-    /*var _squareVertexPositionBuffer = _gl.createBuffer();
-    _gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _squareVertexPositionBuffer);
-
-    // fill "current buffer" with triangle verticies
-    List<double> vertices = _level._startCube.dumpPositionBuffer();
-    _gl.bufferDataTyped(webgl.RenderingContext.ARRAY_BUFFER, new Float32List.fromList(vertices), webgl.RenderingContext.STATIC_DRAW);
-
-    _gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _squareVertexPositionBuffer);
-    _gl.vertexAttribPointer(_aVertexPosition, _dimensions, webgl.RenderingContext.FLOAT, false, 0, 0);
-    _setMatrixUniforms();
-    _gl.drawArrays(webgl.RenderingContext.TRIANGLE_STRIP, 0, 4*6); // square, start at 0, total 4
-
-    window.console.log(vertices);*/
-
-/*
-    // create square
-    var _squareVertexPositionBuffer = _gl.createBuffer();
-    _gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _squareVertexPositionBuffer);
-
-    // fill "current buffer" with triangle verticies
-    List<double> vertices = [1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0, -1.0, 0.0, -1.0, -1.0, 0.0];
-    _gl.bufferDataTyped(webgl.RenderingContext.ARRAY_BUFFER, new Float32List.fromList(vertices), webgl.RenderingContext.STATIC_DRAW);
-
-    _gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _squareVertexPositionBuffer);
-    _gl.vertexAttribPointer(_aVertexPosition, _dimensions, webgl.RenderingContext.FLOAT, false, 0, 0);
-    _setMatrixUniforms();
-    _gl.drawArrays(webgl.RenderingContext.TRIANGLE_STRIP, 0, 4); // square, start at 0, total 4
-
-    window.console.log(vertices);
-*/
-    
   }
 
+  void hookEventHandlers() {
+    window.onKeyUp.listen((KeyboardEvent e) {
+      switch (e.keyCode) {
+        case KeyCode.W:
+          _camera.move_forward(FORWARD_AMOUNT);
+          break;
+        case KeyCode.S:
+          _camera.move_forward(-BACKWARD_AMOUNT);
+          break;
+        case KeyCode.A:
+          _camera.move_left(STRAFE_AMOUNT);
+          break;
+        case KeyCode.D:
+          _camera.move_left(-STRAFE_AMOUNT);
+          break;
+
+        case KeyCode.LEFT:
+          if (e.shiftKey) {
+            _camera.roll_left(ROLL_AMOUNT);
+          } else {
+            _camera.turn_left(TURN_AMOUNT);
+          }
+          break;
+        case KeyCode.RIGHT:
+          if (e.shiftKey) {
+            _camera.roll_left(-ROLL_AMOUNT);
+          } else {
+            _camera.turn_left(-TURN_AMOUNT);
+          }
+          break;
+
+
+        case KeyCode.UP:
+          _camera.yaw_up(YAW_AMOUNT);
+          break;
+        case KeyCode.DOWN:
+          _camera.yaw_up(-YAW_AMOUNT);
+          break;
+
+      }
+      render();
+    });
+  }
 }
 
 void main() {
   Game game = new Game(querySelector('#game'));
+  game.hookEventHandlers();
   //window.console.log(level._startCube.dumpBuffer());
   game.render();
 }
