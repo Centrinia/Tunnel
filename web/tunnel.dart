@@ -4,23 +4,31 @@ import 'dart:web_gl' as webgl;
 import 'dart:typed_data';
 import 'dart:math';
 import 'dart:async';
+import 'dart:collection';
 
 class CubeVertex {
   int _axis;
   int _direction;
   Vector3 _position;
-  Vector3 _texcoords;
+  Vector2 _texcoords;
+  Vector2 _texatlas;
   bool _hasTexture;
   /*
    * Make a cube vertex where the center is given by position, 
    * the cube edge length is 2*radius, and the direction gives
    * the sign of the respective axis of the face.
    */
-  CubeVertex(Vector3 position, double radius, int axis, int direction, List<double> squareVertex, bool hasTexture) {
+  CubeVertex(Vector3 position, double radius, int axis, int direction, List<double> squareVertex, Link link) {
     _axis = axis;
     _direction = direction;
-    _texcoords = new Vector3.zero();
-    _hasTexture = hasTexture;
+    if (link != null) {
+      //_texatlas = new Vector2.copy(link.texatlas);
+      _texatlas = new Vector2(1.0, 1.0);
+    } else {
+      _texatlas = new Vector2(-1.0,-1.0);
+    }
+    _texcoords = new Vector2.zero();
+    _hasTexture = link != null;
 
     _position = new Vector3.copy(position);
     var d = direction != 0 ? radius : -radius;
@@ -28,25 +36,29 @@ class CubeVertex {
     int index = 0;
     for (int i = 0; i < 3; i++) {
       if (i != axis) {
+        int reverse_index = (axis % 2) == direction ? 1 - index : index;
+
         _position[i] += squareVertex[index] != 0 ? radius : -radius;
-        _texcoords[index] = squareVertex[index] != 0 ? 1.0 : 0.0;
+        _texcoords[index] = squareVertex[reverse_index] != 0 ? 1.0 : 0.0;
         index++;
       }
     }
   }
   List<double> dumpPosition() {
-    List<double> buffer = new List<double>(3);
+    List<double> buffer = new List<double>(4);
     _position.copyIntoArray(buffer);
+    buffer[3] = 0.0;
     return buffer;
   }
   List<double> dumpFaceNormal() {
-    List<double> normal = [0.0, 0.0, 0.0];
+    List<double> normal = [0.0, 0.0, 0.0, 0.0];
     normal[_axis] = _direction != 0 ? 1.0 : -1.0;
     return normal;
   }
   List<double> dumpTexcoords() {
-    List<double> buffer = new List<double>(3);
+    List<double> buffer = new List<double>(4);
     _texcoords.copyIntoArray(buffer);
+    _texatlas.copyIntoArray(buffer, 2);
     return buffer;
   }
 }
@@ -55,14 +67,57 @@ class CubeVertex {
  * A link to a song.
  */
 class Link {
-  String _name;
-  String _imageURI;
-  Link(String name, String imageURI) {
-    _name = name;
-    _imageURI = imageURI;
+  String _songName;
+  String _albumName;
+  String _artistName;
+  String _previewURL;
+  String _imageURL;
+  ImageElement _image;
+  bool _imageReady;
+  webgl.Texture _texture;
+  webgl.RenderingContext _gl;
+
+  Link(webgl.RenderingContext gl, String songName, String albumName, String artistName, String previewURL, String imageURL) {
+    _gl = gl;
+    _songName = songName;
+    _albumName = albumName;
+    _artistName = artistName;
+    _previewURL = previewURL;
+    _imageURL = imageURL;
+
+    _image = new ImageElement();
+    _imageReady = false;
+    _texture = _gl.createTexture();
+    _image.onLoad.listen((e) {
+      _gl.bindTexture(webgl.TEXTURE_2D, _texture);
+      _gl.texImage2DImage(webgl.TEXTURE_2D, 0, webgl.RGBA, webgl.RGBA, webgl.UNSIGNED_BYTE, _image);
+      _gl.texParameteri(webgl.TEXTURE_2D, webgl.TEXTURE_MIN_FILTER, webgl.NEAREST);
+      _gl.texParameteri(webgl.TEXTURE_2D, webgl.TEXTURE_MAG_FILTER, webgl.NEAREST);
+      _imageReady = true;
+    }, onError: (e) => print(e));
+    _image.src = imageURL;
+    counter += 1.0;
+  }
+  static double counter = 0.0;
+  /*Vector2 get texAtlas {
+
+    return new Vector2(counter, 0.0);
+  }*/
+  void bindTexture() {
+    if (_imageReady) {
+      _gl.bindTexture(webgl.TEXTURE_2D, _texture);
+    }
   }
 
+  void start() {
+    window.console.log(_songName);
+  }
 
+  void stop() {
+    window.console.log("stopped");
+  }
+
+  Vector2 get texatlas => new Vector2(0.5, 0.5);
 }
 class Cube {
   double _radius;
@@ -71,14 +126,16 @@ class Cube {
   List<bool> _hasSide;
   List<Cube> _neighbors;
   List<Link> _links;
+  List<Vector3> _normals;
   Cube() : this.positioned(new Vector3.zero());
 
-  
+
   Cube.positioned(Vector3 position, [double radius = 32.0]) {
     _radius = radius;
     _links = new List<Link>(6);
     _position = new Vector3.zero();
     _hasSide = new List<bool>(6);
+    _normals = new List<Vector3>(6);
     for (int i = 0; i < 6; i++) {
       _hasSide[i] = true;
     }
@@ -87,11 +144,11 @@ class Cube {
     _neighbors = new List<Cube>(6);
     _initBuffer();
   }
-  void addLink(int axis, int direction, Link link)
-  {
-    if(_hasSide[axis*2+direction]){
-    _links[axis*2+direction] = link;
+  void addLink(int axis, int direction, Link link) {
+    if (_hasSide[axis * 2 + direction]) {
+      _links[axis * 2 + direction] = link;
     }
+    _initBuffer();
   }
   void connectCube(int axis, int direction, Cube neighbor) {
     _hasSide[axis * 2 + direction] = false;
@@ -110,24 +167,21 @@ class Cube {
   }
   void _initBuffer() {
     _vertexes = new List<CubeVertex>();
-    //var squareVertexes = [[0, 0], [1, 0], [1, 1], [0, 1]];
+
     var squareVertexes = [[0, 0], [0, 1], [1, 1], [1, 0]];
     // Generate the vertexes.
     for (int i = 0; i < 6; i++) {
+      int direction = i % 2;
+      int axis = i ~/ 2;
+      _normals[i] = new Vector3.zero();
+      _normals[i][axis] = direction != 0 ? -1.0 : 1.0;
       if (_hasSide[i]) {
-        int direction = i % 2;
-        int axis = i ~/ 2;
-
         for (int j = 0; j < 4; j++) {
           int j_rev = ((direction != 0) != (axis % 2 == 1)) ? j : 3 - j;
-          _vertexes.add(new CubeVertex(_position, _radius, axis, direction, squareVertexes[j_rev], _links[i] != null));
+          _vertexes.add(new CubeVertex(_position, _radius, axis, direction, squareVertexes[j_rev], _links[i]));
         }
       }
     }
-
-    // fill "current buffer" with triangle verticies
-    //vertices = [1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0, -1.0, 0.0, -1.0, -1.0, 0.0];
-    //_gl.bufferDataTyped(webgl.RenderingContext.ARRAY_BUFFER, new Float32List.fromList(vertices), webgl.RenderingContext.STATIC_DRAW);
   }
   List<double> dumpPositionBuffer() {
     List<double> buffer = new List<double>();
@@ -159,8 +213,7 @@ class Cube {
 }
 class Level {
   int _numFaces;
-  /*webgl.Buffer _vertexPositionBuffer;
-  webgl.Buffer _vertexNormalBuffer;*/
+
   webgl.Buffer _vertexBuffer;
   Cube _startCube;
   List<Cube> _cubes;
@@ -185,16 +238,18 @@ class Level {
     root.connectCube(2, 1, nearmiddle);
     _cubes.add(nearmiddle);
 
-
-
-    int length = _random.nextInt(length_limit-1)+1;
+    int length = _random.nextInt(length_limit - 1) + 1;
 
     Cube middle;
-    length = _random.nextInt(length_limit-1)+1;
+    length = _random.nextInt(length_limit - 1) + 1;
 
     for (int i = 0; i < length; i++) {
       middle = new Cube();
       nearmiddle.connectCube(2, 1, middle);
+
+      Link link = _links[_random.nextInt(_links.length)];
+      nearmiddle.addLink(_random.nextInt(3), _random.nextInt(2), link);
+
       _cubes.add(middle);
       nearmiddle = middle;
     }
@@ -214,8 +269,8 @@ class Level {
       left = farleft;
     }
 
-     new_axis = _random.nextInt(2);
-     length = _random.nextInt(length_limit-1)+1;
+    new_axis = _random.nextInt(2);
+    length = _random.nextInt(length_limit - 1) + 1;
 
     Cube right = new Cube();
     middle.connectCube(new_axis, 1, right);
@@ -233,15 +288,23 @@ class Level {
     _recursiveAddCube(farleft, levels - 1);
     _recursiveAddCube(farright, levels - 1);
   }
+  List<Link> _links;
   Level(webgl.RenderingContext gl) {
+    _gl = gl;
+
+    _links = new List<Link>();
+    _links.add(new Link(_gl, "Black Winter Day", "Tales From The Thousand Lakes", "Amorphis", "media/out.mp3", "media/out.jpg"));
+    _links.add(new Link(_gl, "Drawn To Black", "Above The Weeping World", "Insomnium", "media/out2.mp3", "media/out2.jpg"));
+    _links.add(new Link(_gl, "The Gallery", "The Gallery", "Dark Tranquillity", "media/out3.mp3", "media/out3.jpg"));
+
+
     _random = new Random();
     _numFaces = 0;
-    _gl = gl;
     _cubes = new List<Cube>();
 
     _startCube = new Cube();
     _cubes.add(_startCube);
-    _recursiveAddCube(_startCube, 12,10);
+    _recursiveAddCube(_startCube, 12, 10);
 
     _initBuffers();
   }
@@ -274,40 +337,70 @@ class Level {
       });
     }
   }
+  List<Link> _faceLinks;
+
   /**
-   * @param cube the cube that the player is in.
+   * @param startingCube the cube that the player is in.
    */
   void makeBuffers(Cube startingCube) {
     List<double> buffer = new List<double>();
 
-    /*for (var cube in _cubes) {
-      buffer.addAll(cube.dumpBuffer());
-    }*/
+    _faceLinks = new List<Link>();
     /* Determine visibility. */
     _traverseCubes(startingCube, (cube) {
       buffer.addAll(cube.dumpBuffer());
+      for (int i=0;i<6;i++) {
+        if(cube._hasSide[i]) {
+        _faceLinks.add(cube._links[i]);
+        }
+      }
     }, 2);
 
     _gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _vertexBuffer);
     _gl.bufferDataTyped(webgl.RenderingContext.ARRAY_BUFFER, new Float32List.fromList(buffer), webgl.RenderingContext.STATIC_DRAW);
 
-    _numFaces = buffer.length ~/ (stride);
+    _numFaces = buffer.length ~/ stride;
   }
-  final int dimensions = 3;
-  final int stride = (3 * 4) * 3;
-  final int positionOffset = 0;
-  final int normalOffset = 3 * 4;
-  void render(int aVertexPosition, int aVertexNormal) {
+  static final int dimensions = 4;
+  static final int stride = (dimensions * 4) * 3;
+  static final int positionOffset = 0;
+  static final int normalOffset = dimensions * 4;
+  static final int texCoordOffset = dimensions * 4 * 2;
+  static final int texAtlasOffset = dimensions * 4 * 2 + dimensions * 2;
+
+  void render(int aVertexPosition, int aVertexNormal, int aTexCoord, int aTexAtlas) {
+    Map<Link, List<int>> linkTextures = new HashMap<Link, List<int>>();
+    _gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _vertexBuffer);
+    _gl.vertexAttribPointer(aVertexPosition, 3, webgl.RenderingContext.FLOAT, false, stride, positionOffset);
+    _gl.vertexAttribPointer(aVertexNormal, 3, webgl.RenderingContext.FLOAT, false, stride, normalOffset);
+    _gl.vertexAttribPointer(aTexCoord, 2, webgl.RenderingContext.FLOAT, false, stride, texCoordOffset);
+    _gl.vertexAttribPointer(aTexAtlas, 2, webgl.RenderingContext.FLOAT, false, stride, texAtlasOffset);
+
+
     for (int i = 0; i < _numFaces; i++) {
-      _gl.bindBuffer(webgl.RenderingContext.ARRAY_BUFFER, _vertexBuffer);
+      Link link = _faceLinks[i];
+      if (link != null) {
+        if (linkTextures[link] == null) {
+          linkTextures[link] = new List<int>();
+        }
+        linkTextures[link].add(i);
+      } else {
+        /* Draw the flat. */
+        _gl.drawArrays(webgl.RenderingContext.TRIANGLE_FAN, i * 4, 4);
+      }
+    }
 
-      _gl.vertexAttribPointer(aVertexPosition, dimensions, webgl.RenderingContext.FLOAT, false, stride, i * stride * 4 + positionOffset);
+        for (Link link in linkTextures.keys) {
 
-      _gl.vertexAttribPointer(aVertexNormal, dimensions, webgl.RenderingContext.FLOAT, false, stride, i * stride * 4 + normalOffset);
-      _gl.drawArrays(webgl.RenderingContext.TRIANGLE_FAN, 0, 4);
-      //_gl.drawArrays(webgl.RenderingContext.LINE_LOOP, 0, 4);
+      link.bindTexture();
+
+      for (int i in linkTextures[link]) {
+
+        _gl.drawArrays(webgl.RenderingContext.TRIANGLE_FAN, i * 4, 4);
+      }
     }
   }
+
 }
 
 /**
@@ -318,6 +411,7 @@ class Player {
   static const RADIUS = 0.5;
   static final DRAG = pow(0.2, 1.0 / Game.TICS_PER_SECOND);
   static final FRICTION = 0.8;
+  Link _currentLink;
 
   Camera _camera;
   Vector3 _momentum;
@@ -327,6 +421,7 @@ class Player {
     _camera = new Camera();
     _momentum = new Vector3.zero();
     _cube = cube;
+    _currentLink = null;
   }
 
   void impulse(Vector3 direction) {
@@ -340,8 +435,9 @@ class Player {
     impulse(_camera.left * -amount);
   }
 
+  static final CRASH_THRESHOLD = 2;
   void advance() {
-    Vector3 new_position = _camera._position + _momentum;
+    Vector3 new_position = _camera.position + _momentum;
 
     bool hit_wall = false;
     for (int axis = 0; axis < 3; axis++) {
@@ -349,20 +445,31 @@ class Player {
       if ((diff + RADIUS).abs() > _cube._radius && !_noclipping) {
         int direction = diff + RADIUS > 0 ? 1 : 0;
         if (_cube._hasSide[axis * 2 + direction]) {
+          /* Activate the music preview if there is a link and the player crashes into the album art with enough speed. */
+          window.console.log(_momentum.dot(_cube._normals[axis * 2 + direction]));
+          if (_cube._links[axis * 2 + direction] != null && -_momentum.dot(_cube._normals[axis * 2 + direction]) > CRASH_THRESHOLD) {
+            _currentLink = _cube._links[axis * 2 + direction];
+            _currentLink.stop();
+            _currentLink.start();
+          }
           hit_wall = true;
           Vector3 normal = new Vector3.zero();
           normal[axis] = 1.0 - direction * 2.0;
           _momentum.reflect(normal);
           _momentum *= FRICTION;
-          new_position = _camera._position + _momentum;
+          new_position = _camera.position + _momentum;
         } else {
+          if (_currentLink != null) {
+            _currentLink.stop();
+            _currentLink = null;
+          }
           _cube = _cube._neighbors[axis * 2 + direction];
         }
       }
     }
 
 
-    _camera._position = new_position;
+    _camera.position = new_position;
     _momentum *= DRAG;
   }
   void turn_left(double angle) {
@@ -380,6 +487,7 @@ class Player {
  * The camera.
  */
 class Camera {
+  bool need_update;
   Vector3 _position;
   Vector3 _up;
   Vector3 _direction;
@@ -387,8 +495,10 @@ class Camera {
     _position = new Vector3(0.0, 0.0, 0.0);
     _up = new Vector3(0.0, 1.0, 0.0);
     _direction = new Vector3(0.0, 0.0, 1.0);
+    need_update = true;
   }
   Matrix4 getModelviewMatrix() {
+    need_update = false;
     return makeViewMatrix(_position, _position + _direction, _up);
   }
 
@@ -399,6 +509,7 @@ class Camera {
     Quaternion quat = new Quaternion.axisAngle(_direction.cross(_up), -angle);
     _direction = quat.rotate(_direction);
     _up = quat.rotate(_up);
+    need_update = angle != 0.0;
   }
 
   /**
@@ -407,6 +518,7 @@ class Camera {
   void turn_left(double angle) {
     Quaternion quat = new Quaternion.axisAngle(_up, -angle);
     _direction = quat.rotate(_direction);
+    need_update = angle != 0.0;
   }
 
   /**
@@ -415,22 +527,33 @@ class Camera {
   void roll_left(double angle) {
     Quaternion quat = new Quaternion.axisAngle(_direction, angle);
     _up = quat.rotate(_up);
+    need_update = angle != 0.0;
+
   }
   /**
    * Move the camera forward by the given amount.
    */
   void move_forward(double amount) {
     _position += _direction * amount;
+    need_update = amount != 0.0;
   }
   /**
    * Move the camera to the left by the given amount.
    */
   void move_left(double amount) {
     _position -= left * amount;
+    need_update = amount != 0.0;
   }
 
+  static const THRESHOLD = 1e-5;
   Vector3 get left => _direction.cross(_up);
-
+  Vector3 get position => _position;
+  set position(Vector3 new_position) {
+    if (new_position.relativeError(position) > THRESHOLD) {
+      need_update = true;
+      _position = new_position;
+    }
+  }
 }
 
 /**
@@ -471,12 +594,15 @@ class Game {
 
   int _aVertexPosition;
   int _aVertexNormal;
+  int _aVertexTexCoord;
+  int _aVertexTexAtlas;
 
   webgl.UniformLocation _uPMatrix;
   webgl.UniformLocation _uNMatrix;
   webgl.UniformLocation _uMVMatrix;
+
   Cube _currentCube;
-  
+
 
   Game(CanvasElement canvas) {
     _viewportWidth = canvas.width;
@@ -500,19 +626,25 @@ class Game {
     String vsSource = """
     attribute vec3 vPosition;
     attribute vec3 vNormal;
-
+    attribute vec2 vTexCoord;
+    attribute vec2 vTexAtlas;
     uniform mat4 uMVMatrix;
     uniform mat3 uNMatrix;
     uniform mat4 uPMatrix;
     varying vec3 fPosition;
     varying vec3 fNormal;
     varying vec3 fColor;
+    varying vec2 fTexCoord;
+    varying vec2 fTexAtlas;
     void main(void) {
+
         vec4 mvPos = uMVMatrix * vec4(vPosition, 1.0);
         gl_Position = uPMatrix * mvPos;
         fPosition = mvPos.xyz / mvPos.w;
         fColor = (vNormal+1.0)/2.0;
         fNormal = uNMatrix * vNormal;
+        fTexCoord = vTexCoord;
+        fTexAtlas = vTexAtlas;
     }
     """;
 
@@ -520,15 +652,24 @@ class Game {
     // use to animate color
     String fsSource = """
     precision mediump float;
+    uniform sampler2D uSampler;
     varying vec3 fPosition;
     varying vec3 fNormal;
     varying vec3 fColor;
+    varying vec2 fTexCoord;
+    varying vec2 fTexAtlas;
     void main(void) {
         float attenuation = 0.0;
         float radiusLight = 30.0 / dot(fPosition,fPosition);
         attenuation += max(0.0, dot(fNormal, normalize(fPosition))); 
         attenuation += max(min(radiusLight,1.0),0.1);
-        vec3 color = fColor;
+        vec3 color;
+        if(fTexAtlas != vec2(-1.0, -1.0)){
+            color = texture2D(uSampler, fTexCoord).rgb;
+        } else {
+          color = fColor;
+        }
+
         gl_FragColor = vec4(color * attenuation,1.0);
     }
     """;
@@ -567,17 +708,16 @@ class Game {
     }
 
     _aVertexPosition = _gl.getAttribLocation(_shaderProgram, "vPosition");
-    try {
-      _gl.enableVertexAttribArray(_aVertexPosition);
-    } on Exception {
+    _gl.enableVertexAttribArray(_aVertexPosition);
 
-    }
     _aVertexNormal = _gl.getAttribLocation(_shaderProgram, "vNormal");
-    try {
-      _gl.enableVertexAttribArray(_aVertexNormal);
-    } on Exception {
+    _gl.enableVertexAttribArray(_aVertexNormal);
 
-    }
+    _aVertexTexCoord = _gl.getAttribLocation(_shaderProgram, "vTexCoord");
+    _gl.enableVertexAttribArray(_aVertexTexCoord);
+    _aVertexTexAtlas = _gl.getAttribLocation(_shaderProgram, "vTexAtlas");
+    _gl.enableVertexAttribArray(_aVertexTexAtlas);
+
     _uPMatrix = _gl.getUniformLocation(_shaderProgram, "uPMatrix");
     _uNMatrix = _gl.getUniformLocation(_shaderProgram, "uNMatrix");
     _uMVMatrix = _gl.getUniformLocation(_shaderProgram, "uMVMatrix");
@@ -602,7 +742,12 @@ class Game {
 
   }
 
+
   void _render() {
+    if (!_player._camera.need_update) {
+      return;
+    }
+
     _gl.viewport(0, 0, _viewportWidth, _viewportHeight);
     _gl.clearColor(0, 0, 0, 1);
     _gl.enable(webgl.RenderingContext.CULL_FACE);
@@ -615,12 +760,11 @@ class Game {
     _mvMatrix = _player._camera.getModelviewMatrix();
     _setMatrixUniforms();
 
-    if(_currentCube != _player._cube){
-    _level.makeBuffers(_player._cube);
-    _currentCube = _player._cube;
+    if (_currentCube != _player._cube) {
+      _level.makeBuffers(_player._cube);
+      _currentCube = _player._cube;
     }
-    _level.render(_aVertexPosition, _aVertexNormal);
-
+    _level.render(_aVertexPosition, _aVertexNormal, _aVertexTexCoord, _aVertexTexAtlas);
   }
 
   void _handleKey(KeyboardEvent e) {
@@ -635,7 +779,7 @@ class Game {
         _player.move_forward(-BACKWARD_AMOUNT / TICS_PER_SECOND);
         break;
       case KeyCode.A:
-              _player.move_left(STRAFE_AMOUNT / TICS_PER_SECOND);
+        _player.move_left(STRAFE_AMOUNT / TICS_PER_SECOND);
         break;
       //case KeyCode.D:
       case KeyCode.E:
