@@ -1,10 +1,13 @@
 import 'dart:html';
+import 'dart:convert';
 import 'package:vector_math/vector_math.dart';
 import 'dart:web_gl' as webgl;
 import 'dart:typed_data';
 import 'dart:math';
 import 'dart:async';
 import 'dart:collection';
+import 'dart:web_audio' as snd;
+
 
 class CubeVertex {
   int _axis;
@@ -25,7 +28,7 @@ class CubeVertex {
       //_texatlas = new Vector2.copy(link.texatlas);
       _texatlas = new Vector2(1.0, 1.0);
     } else {
-      _texatlas = new Vector2(-1.0,-1.0);
+      _texatlas = new Vector2(-1.0, -1.0);
     }
     _texcoords = new Vector2.zero();
     _hasTexture = link != null;
@@ -77,8 +80,11 @@ class Link {
   webgl.Texture _texture;
   webgl.RenderingContext _gl;
 
-  Link(webgl.RenderingContext gl, String songName, String albumName, String artistName, String previewURL, String imageURL) {
+  Link(webgl.RenderingContext gl, snd.AudioContext audioContext, String songName, String albumName, String artistName, String previewURL, String imageURL) {
     _gl = gl;
+    _audioContext = audioContext;
+    _playing = false;
+
     _songName = songName;
     _albumName = albumName;
     _artistName = artistName;
@@ -97,7 +103,10 @@ class Link {
     }, onError: (e) => print(e));
     _image.src = imageURL;
     counter += 1.0;
+
   }
+
+
   static double counter = 0.0;
   /*Vector2 get texAtlas {
 
@@ -107,14 +116,44 @@ class Link {
     if (_imageReady) {
       _gl.bindTexture(webgl.TEXTURE_2D, _texture);
     }
+
+  }
+  snd.AudioContext _audioContext;
+  snd.AudioBufferSourceNode _source;
+  bool _playing;
+  void startSong() {
+    if (_playing) {
+      return;
+    }
+    HttpRequest request = new HttpRequest();
+    request.open("GET", _previewURL, async: true);
+    request.responseType = "arraybuffer";
+    request.onLoad.listen((e) {
+      window.console.log(request.response);
+      _audioContext.decodeAudioData(request.response).then((snd.AudioBuffer buffer) {
+
+        if (buffer == null) {
+          window.console.warn("Error decoding file data: $_previewURL");
+          return;
+        }
+        _source = _audioContext.createBufferSource();
+
+        _source.buffer = buffer;
+        _source.connectNode(_audioContext.destination);
+        _source.start(0);
+        _playing = true;
+      });
+    });
+    request.onError.listen((e) => window.console.warn("BufferLoader: XHR error"));
+    request.send();
+
   }
 
-  void start() {
-    window.console.log(_songName);
-  }
-
-  void stop() {
-    window.console.log("stopped");
+  void stopSong() {
+    if (_playing) {
+      _source.stop(0);
+      _playing = false;
+    }
   }
 
   Vector2 get texatlas => new Vector2(0.5, 0.5);
@@ -127,6 +166,7 @@ class Cube {
   List<Cube> _neighbors;
   List<Link> _links;
   List<Vector3> _normals;
+  ArtistTree _artistTree;
   Cube() : this.positioned(new Vector3.zero());
 
 
@@ -164,6 +204,9 @@ class Cube {
 
     neighbor._initBuffer();
     _initBuffer();
+  }
+  void visit() {
+
   }
   void _initBuffer() {
     _vertexes = new List<CubeVertex>();
@@ -288,14 +331,17 @@ class Level {
     _recursiveAddCube(farleft, levels - 1);
     _recursiveAddCube(farright, levels - 1);
   }
+  snd.AudioContext _audioContext;
   List<Link> _links;
-  Level(webgl.RenderingContext gl) {
+
+  Level(webgl.RenderingContext gl, snd.AudioContext audioContext) {
     _gl = gl;
+    _audioContext = audioContext;
 
     _links = new List<Link>();
-    _links.add(new Link(_gl, "Black Winter Day", "Tales From The Thousand Lakes", "Amorphis", "media/out.mp3", "media/out.jpg"));
-    _links.add(new Link(_gl, "Drawn To Black", "Above The Weeping World", "Insomnium", "media/out2.mp3", "media/out2.jpg"));
-    _links.add(new Link(_gl, "The Gallery", "The Gallery", "Dark Tranquillity", "media/out3.mp3", "media/out3.jpg"));
+    _links.add(new Link(_gl, _audioContext, "New Age Messiah", "Amok", "Sentenced", "media/out.mp3", "media/out.jpg"));
+    _links.add(new Link(_gl, _audioContext, "The Primeval Dark", "Above The Weeping World", "Insomnium", "media/out2.mp3", "media/out2.jpg"));
+    _links.add(new Link(_gl, _audioContext, "The Hunt", "Winterborn", "Wolfheart", "media/out3.mp3", "media/out3.jpg"));
 
 
     _random = new Random();
@@ -349,9 +395,9 @@ class Level {
     /* Determine visibility. */
     _traverseCubes(startingCube, (cube) {
       buffer.addAll(cube.dumpBuffer());
-      for (int i=0;i<6;i++) {
-        if(cube._hasSide[i]) {
-        _faceLinks.add(cube._links[i]);
+      for (int i = 0; i < 6; i++) {
+        if (cube._hasSide[i]) {
+          _faceLinks.add(cube._links[i]);
         }
       }
     }, 2);
@@ -390,7 +436,7 @@ class Level {
       }
     }
 
-        for (Link link in linkTextures.keys) {
+    for (Link link in linkTextures.keys) {
 
       link.bindTexture();
 
@@ -446,11 +492,11 @@ class Player {
         int direction = diff + RADIUS > 0 ? 1 : 0;
         if (_cube._hasSide[axis * 2 + direction]) {
           /* Activate the music preview if there is a link and the player crashes into the album art with enough speed. */
-          window.console.log(_momentum.dot(_cube._normals[axis * 2 + direction]));
+          //window.console.log(_momentum.dot(_cube._normals[axis * 2 + direction]));
           if (_cube._links[axis * 2 + direction] != null && -_momentum.dot(_cube._normals[axis * 2 + direction]) > CRASH_THRESHOLD) {
             _currentLink = _cube._links[axis * 2 + direction];
-            _currentLink.stop();
-            _currentLink.start();
+            _currentLink.stopSong();
+            _currentLink.startSong();
           }
           hit_wall = true;
           Vector3 normal = new Vector3.zero();
@@ -460,10 +506,11 @@ class Player {
           new_position = _camera.position + _momentum;
         } else {
           if (_currentLink != null) {
-            _currentLink.stop();
+            _currentLink.stopSong();
             _currentLink = null;
           }
           _cube = _cube._neighbors[axis * 2 + direction];
+          _cube.visit();
         }
       }
     }
@@ -602,11 +649,22 @@ class Game {
   webgl.UniformLocation _uMVMatrix;
 
   Cube _currentCube;
-
+  snd.AudioContext _audioContext;
 
   Game(CanvasElement canvas) {
     _viewportWidth = canvas.width;
     _viewportHeight = canvas.height;
+    canvas.onClick.listen((e) {
+      canvas.requestFullscreen();
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    });
+
+    canvas.onFullscreenChange.listen((e) {
+      _viewportWidth = canvas.width;
+      _viewportHeight = canvas.height;
+    });
+
     _gl = canvas.getContext("experimental-webgl");
 
     _initShaders();
@@ -615,7 +673,9 @@ class Game {
     _gl.enable(webgl.RenderingContext.DEPTH_TEST);
 
 
-    _level = new Level(_gl);
+    _audioContext = new snd.AudioContext();
+
+    _level = new Level(_gl, _audioContext);
     _player = new Player(_level._startCube);
   }
 
@@ -770,19 +830,19 @@ class Game {
   void _handleKey(KeyboardEvent e) {
     const INVERT_VERTICAL = -1;
     switch (e.keyCode) {
-      //case KeyCode.W:
-      case KeyCode.COMMA:
+      case KeyCode.W:
+        //case KeyCode.COMMA:
         _player.move_forward(FORWARD_AMOUNT / TICS_PER_SECOND);
         break;
-      //case KeyCode.S:
-      case KeyCode.O:
+      case KeyCode.S:
+        //case KeyCode.O:
         _player.move_forward(-BACKWARD_AMOUNT / TICS_PER_SECOND);
         break;
       case KeyCode.A:
         _player.move_left(STRAFE_AMOUNT / TICS_PER_SECOND);
         break;
-      //case KeyCode.D:
-      case KeyCode.E:
+      case KeyCode.D:
+        //case KeyCode.E:
         _player.move_left(-STRAFE_AMOUNT / TICS_PER_SECOND);
         break;
 
@@ -850,6 +910,33 @@ class Keyboard {
    * Check if the given key code is pressed. You should use the [KeyCode] class.
    */
   isPressed(int keyCode) => _keys.containsKey(keyCode);
+}
+
+class ArtistTree {
+  String _artistName;
+  List<String> _similars;
+  ArtistTree(String name) {
+    _artistName = name;
+  }
+  static const API_KEY = "FILDTEOIK2HBORODV";
+  void getSimilars() {
+    HttpRequest request = new HttpRequest();
+    int resultsCount = 15;
+    int server_port = 8006;
+    String requestURL = "http://localhost:$server_port/foo?artist=$_artistName";
+    window.console.log(requestURL);
+    request.open("GET", requestURL, async: true);
+    request.onLoad.listen((e) {
+      window.console.log(request.response);
+      List parsedJSON = JSON.decode(request.responseText);
+      _similars = new List<String>();
+      for (Map x in parsedJSON) {
+        _similars.add(x['name']);
+      }
+    });
+    request.onError.listen((e) => window.console.warn("XHR error"));
+    request.send();
+  }
 }
 
 void main() {
